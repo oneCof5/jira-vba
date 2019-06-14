@@ -657,10 +657,12 @@ On Error GoTo Err_UpdateIssues
     
     Dim wb As Workbook
     Dim wksSetup As Worksheet, wksTimeLogs As Worksheet
+    Dim r As Range
     Dim lLastRow As Long, lRow As Long, lOffset As Long
     Dim sJiraBaseUrl As String, sJson As String, sParams As String, _
         sThisUser As String, sKey As String
     Dim oJson As Dictionary
+    Dim dDate As Date
     
     Application.ScreenUpdating = False
         
@@ -686,6 +688,13 @@ On Error GoTo Err_UpdateIssues
         lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
         lOffset = 5
         
+        ' fill Today's Date if Blank
+        dDate = .Range("effectiveDate")
+        If Year(dDate) < 2019 Then
+            dDate = Date
+            .Range("effectiveDate").Value = dDate
+        End If
+        
         ' Iterate over the issues
         For lRow = 6 To lLastRow
             
@@ -702,7 +711,22 @@ On Error GoTo Err_UpdateIssues
             
                 ' Validate this issue exists via GET
                 Set oJson = GetIssues(lRow, sJiraBaseUrl, sKey, sParams)
+                
                 If Not IsNull(oJson) Then
+                        
+                    ' Calculated Duration
+                    .Cells(lRow, 5).NumberFormat = "h:mm"
+                    .Cells(lRow, 5).FormulaR1C1 = "=IF(RC[-2]-RC[-3]>0, RC[-2]-RC[-3],"""")"
+                    
+                    ' Time Spent in Minutes
+                    .Cells(lRow, 6).NumberFormat = "#,##0"
+                    ' =IF(ISERROR(E6*1440),"",E6*1440)
+                    .Cells(lRow, 6).FormulaR1C1 = "=IF(ISERROR(RC[-1]*1440), """",RC[-1]*1440)"
+                    
+                    ' Calculated Start Time
+                    .Cells(lRow, 7).NumberFormat = "m/d/yyyy h:mm"
+                    .Cells(lRow, 7).Formula = "=$G$1 + B" & lRow
+                
                     'type
                     .Cells(lRow, 8).Value = oJson("issues")(1)("fields")("issuetype")("name")
                     'summary
