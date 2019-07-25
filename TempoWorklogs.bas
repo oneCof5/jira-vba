@@ -1,69 +1,42 @@
 Attribute VB_Name = "TempoWorklogs"
 Option Explicit
 
-Public sBasicAuth As String, sUsername As String
-
 Sub createWorklogs()
 On Error GoTo err_createWorklogs
 
-    Dim wb As Workbook
-    Dim wksTimeLogs As Worksheet, wksSetup As Worksheet, wksTeam As Worksheet, _
-        wksEmail As Worksheet
-    Dim lLastRow As Long, lRow As Long, lPeopleIdx As Long, lWorklogIdx As Long, _
-        lTimeSpentInMinutes As Long
-    Dim sJiraBaseUrl As String, sJson As String, sJsonBody As String, sJql As String
-    Dim sThisUser As String, sThisUserName As String, sThisUserEmail As String, _
+    Dim wksTeam As Worksheet, wksEmail As Worksheet
+    Dim lLastRow As Long, lRow As Long, lIssueIdx As Long, lIssueCount As Long
+    Dim sJson As String, sJsonBody As String, sJql As String, _
+        sThisUser As String, sThisUserName As String, sThisUserEmail As String, _
         sRequestorName As String, sRequestorEmail As String, _
-        sWorklogAudit As String
-    Dim bInclude As Boolean, bHTML As Boolean: bHTML = False
-    Dim dDate As Date
+        sWorklogAudit As String, sInclude As String, sTempDate As String
+    Dim dDate As Date, dWork As Date, dToday As Date
     Dim oIssues As Dictionary, oJsonIssue As Dictionary, oJsonWorklog As Dictionary, _
         oJson As Dictionary
-    Dim vIssue As Variant
-            
-    Set wb = ThisWorkbook
-    Set wksSetup = wb.Worksheets("Setup")
-    Set wksTeam = wb.Worksheets("Team Members")
-    Set wksEmail = wb.Worksheets("Email")
-    
-    ' HTML?
-    If wksEmail.Shapes("Check Box 4").OLEFormat.Object.Value = 1 Then
-        '1 is checked so True
-        bHTML = True
-    Else:
-        bHTML = False
-    End If
+                            
+    Set wksTeam = ThisWorkbook.Worksheets("Team Members")
+    Set wksEmail = ThisWorkbook.Worksheets("Email")
         
-    ' Set the Jira base
-    sJiraBaseUrl = "https://" & Range("sJiraRoot").Value & ".silverchair.com"
-    
-    ' Set the basic authentication for REST
-    If Len(sBasicAuth) = 0 Then
-        sBasicAuth = GetJiraCredentials()
-    End If
-    
-    ' ensure we have creds
-    If Len(sBasicAuth) = 0 Then
-        GoTo exit_createWorklogs
-    End If
-    
-    Application.StatusBar = "Validating Jira Credentials"
-    
-    ' Confirm login via GET of scrum board result. If we have a response, we're good
-    sJson = JiraRestAPI(sBasicAuth, sJiraBaseUrl & "/rest/agile/1.0/board", "GET", 0, 1)
-    
-    If Len(sJson) = 0 Then
-        ' Houston we have issues. Fix the username and password and quit.
-        MsgBox "Issue with User Name or Password. Please try again.", vbExclamation, "Error"
-        GoTo exit_createWorklogs
-    Else:
-        sJson = ""
-    End If
-    
     Application.StatusBar = "Validating Issues"
     
+    ' Ensure the issues are valid
+    Call TempoWorklogs.UpdateIssues
+        
     ' Get the issues from the worksheet and drop in a dictionary
     Set oIssues = GetWorksheetIssues()
+    
+    ' Handle the case where the date is not today and force confirmation
+    dToday = Date
+    sTempDate = Left(oIssues(0)("dateStarted"), 10)
+    dWork = sTempDate
+    
+    If dWork < dToday Then
+        If MsgBox("You're posting time for a date that is not today's date. Are you sure this is correct?", _
+            vbYesNo, "Confirm Date other than Today") = vbNo Then
+            MsgBox ("Cancelled per user request. Check the date of the time entry.")
+            GoTo exit_createWorklogs:
+        End If
+    End If
            
     ' For each person, post the work
     With wksTeam
@@ -72,9 +45,19 @@ On Error GoTo err_createWorklogs
 
         lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
         
+        ' Validate data
+        For lRow = 3 To lLastRow
+            If .Cells(lRow, 2).Value = "" Then
+                MsgBox "There is a data issue in row " & lRow & "." & vbNewLine _
+                    & "Please validate there are no empty rows in the worksheet." & vbNewLine _
+                    & "Processing stopped; No time logs have been posted."
+                Exit For
+            End If
+        Next lRow
+        
         ' First, look up the requestor
         For lRow = 3 To lLastRow
-            If sUsername = .Cells(lRow, 2).Value Then
+            If sUser = .Cells(lRow, 2).Value Then
                 ' this is it!
                 sRequestorName = .Cells(lRow, 3).Value
                 sRequestorEmail = .Cells(lRow, 4).Value
@@ -84,9 +67,9 @@ On Error GoTo err_createWorklogs
         
         For lRow = 3 To lLastRow
             
-            bInclude = .Cells(lRow, 1).Value
+            sInclude = .Cells(lRow, 1).Value
             ' If the INCLUDE is True for this person, let's log some time
-            If bInclude Then
+            If sInclude = "Y" Then
             
                 ' This is a valid user, so capture it
                 sThisUserName = .Cells(lRow, 2).Value ' User name
@@ -94,25 +77,26 @@ On Error GoTo err_createWorklogs
                 sThisUserEmail = .Cells(lRow, 4).Value ' Email
                 
                 Application.StatusBar = "Posting Time: " & sThisUser
-                                
+                
                 'Iterate over the issues log for the work to record for this person
-                For Each vIssue In oIssues
+                lIssueCount = UBound(oIssues.Keys)
+                
+                For lIssueIdx = 0 To lIssueCount
                 
                     Application.StatusBar = "Posting Time: " & sThisUser _
-                        & " (" & vIssue + 1 & " of " & oIssues.Count & ")"
-                    
+                        & " (" & lIssueIdx + 1 & " of " & lIssueCount + 1 & ")"
+                                                                        
                     ' Assemble the JSON
-                    sJsonBody = AssembleJson(oIssues(vIssue), sThisUserName)
+                    sJsonBody = RestHelper.AssembleJson(oIssues(lIssueIdx), sThisUserName)
                                         
                     ' Post it. If successful, this will return JSON with the worklog created.
-                    sJson = JiraRestAPI(sBasicAuth, sJiraBaseUrl & "/rest/tempo-timesheets/3/worklogs", "POST", , , , sJsonBody)
+                    sJson = JiraRestAPI("/rest/tempo-timesheets/3/worklogs", "POST", sBasicAuth, , , , sJsonBody)
                     
-                    ' Process the returned JSON to report out
-                    ' Parse the return into a Dictionary for reporting
+                    ' Process the returned JSON to report out and parse the return into a Dictionary for reporting
                     Set oJson = JsonConverter.ParseJson(sJson)
                 
-                    ' Add a worklog audit line
-                    sWorklogAudit = sWorklogAudit & reportWorklog(oJson, bHTML)
+                    ' Add a worklog audit entry to the log
+                    sWorklogAudit = sWorklogAudit & reportWorklog(oJson)
                 
                 Next ' get next oIssue
                 
@@ -123,10 +107,10 @@ On Error GoTo err_createWorklogs
                     & "(Sending Email)"
                                     
                 'Assemble the mail message (wrap header and footer around the worklog)
-                sWorklogAudit = assembleEmailMsgBody(sWorklogAudit, bHTML)
+                sWorklogAudit = Email.assembleEmailMsgBody(sWorklogAudit)
                 
                 ' Send / Display the mail
-                Call sendEmail(sThisUserName, sThisUserEmail, sRequestorName, sRequestorEmail, sWorklogAudit, bHTML)
+                Call Email.sendEmail(sThisUser, sThisUserEmail, sRequestorName, sRequestorEmail, sWorklogAudit)
                 
                 ' Clean Up
                 sWorklogAudit = ""
@@ -137,6 +121,7 @@ On Error GoTo err_createWorklogs
     End With
     
 exit_createWorklogs:
+    wksEmail.Activate
     Application.StatusBar = "Done!"
     Exit Sub
 
@@ -146,179 +131,17 @@ err_createWorklogs:
     
 End Sub
 
-Function assembleEmailMsgBody(ByVal sBody As String, Optional ByVal bHTML As Boolean = False) As String
-    
-    Dim sBodyText As String, sAdmTime As String, sTotalTime As String
-    Dim wks As Worksheet
-    
-    Set wks = ThisWorkbook.Worksheets("Issues")
-    sAdmTime = Format(wks.Range("adminTime").Value, "#,##0")
-    sTotalTime = Format(wks.Range("totalTime").Value, "#,##0")
-                    
-    'Write the header for this user
-    If bHTML Then
-    
-        sBodyText = emailIntroSection(sTotalTime, bHTML, sAdmTime)
-        
-        sBodyText = sBodyText _
-            & "<table class=MsoTable15Plain4 border=0 cellspacing=0 cellpadding=0 style='border-collapse:collapse'>" _
-            & "<tr>" _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal><b>Worklog No.<o:p></o:p></b></p></td>" _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal><b>Work Date<o:p></o:p></b></p></td>" _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal><b>Time Spent<o:p></o:p></b></p></td>" _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal><b>Issue Key<o:p></o:p></b></p></td>" _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal><b>Issue Summary<o:p></o:p></b></p></td>" _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal><b>Timesheet Comment<o:p></o:p></b></p></td>" _
-            & "</tr>"
-        
-    Else:
-        sBodyText = "Worklog No., " _
-            & "Work Date, " _
-            & "Time Spent, " _
-            & "Issue Key (Summary), " _
-            & "Timesheet Comment" _
-            & vbNewLine
-    End If
-    
-    'Append the log entries
-    sBodyText = sBodyText & sBody
-    
-    If bHTML Then
-        sBodyText = sBodyText & "</table>" _
-            & "<p><o:p></o:p></p>"
-    End If
-    
-    assembleEmailMsgBody = sBodyText
-
-End Function
-
-Function emailIntroSection(sTotalTime As String, Optional ByVal bHTML As Boolean = False, _
-    Optional ByVal sAdmTime As String) As String
-
-    Dim sMsgBody As String
-    Dim wks As Worksheet
-    
-    Set wks = ThisWorkbook.Worksheets("Email")
-
-    ' inject the happy image and informational text
-    ' Start the table and the table row
-    sMsgBody = "<table class=MsoTable15Plain4 border=0 cellspacing=0 cellpadding=0 style='border-collapse:collapse'>" _
-        & "<tr>"
-    ' Image
-    sMsgBody = sMsgBody _
-        & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'>" _
-        & "<p class=MsoNormal>" _
-        & "<img src=""cid:timesheet.jpeg"" height=128><o:p></o:p>" _
-        & "</p>" _
-        & "</td>"
-    ' Informational text from the text box as well as admin time.
-    sMsgBody = sMsgBody _
-        & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'>"
-    
-    sMsgBody = sMsgBody _
-        & "<p class=MsoNormal>" _
-        & "<b>" & sTotalTime & "m</b> of time has been logged on your behalf!<o:p></o:p>" _
-        & "</p><p class=MsoNormal><o:p></o:p></p>"
-    
-    sMsgBody = sMsgBody _
-        & "<p class=MsoNormal>" _
-        & wks.Range("emailBody").Value & "<o:p></o:p>" _
-        & "</p>"
-    ' If there is ADMIN time, notify the user
-    If Len(sAdmTime) > 0 Then
-        sMsgBody = sMsgBody _
-            & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'>" _
-            & "<p class=MsoNormal>" _
-            & "<span style='font-size:16.0pt;color:red'>" _
-            & "ACTION REQUIRED: The total time does <u>not</u> inlude your admin time. Please record " _
-            & sAdmTime & " minutes to your personal admin code.  <o:p></o:p></span>" _
-            & "</p>"
-    End If
-    
-    sMsgBody = sMsgBody _
-        & "</td>"
-    ' close the table and table row
-    sMsgBody = sMsgBody _
-        & "</tr>" _
-        & "</table>"
-    ' add a line break
-    sMsgBody = sMsgBody _
-        & "<p><o:p></o:p></p>"
-        
-    emailIntroSection = sMsgBody
-
-End Function
-
-
-Sub test()
-    Dim sJson As String, sTest As String, sMsgBody As String
-    Dim oJson As Dictionary
-    
-    ' This sJson is a sample of data returned from a single worklog POST
-    sJson = "{" & vbNewLine _
-    & """timeSpentSeconds"": 60," & vbNewLine _
-    & """dateStarted"": ""2019-06-05T00:00:00.000""," & vbNewLine _
-    & """dateCreated"": ""2019-06-05T21:22:15.000""," & vbNewLine _
-    & """dateUpdated"": ""2019-06-05T21:22:15.000""," & vbNewLine _
-    & """comment"": ""User Story Refinement for one minute""," & vbNewLine _
-    & """self"": ""https://newjirasandbox.silverchair.com/rest/api/2/tempo-timesheets/3/worklogs/894724""," & vbNewLine _
-    & """id"": 894724," & vbNewLine _
-    & """jiraWorklogId"": 894724," & vbNewLine _
-    & """author"": {" & vbNewLine _
-    & "    ""self"": ""https://newjirasandbox.silverchair.com/rest/api/2/user?username=cpearson""," & vbNewLine _
-    & "    ""name"": ""cpearson""," & vbNewLine _
-    & "    ""key"": ""cpearson""," & vbNewLine _
-    & "    ""displayName"": ""Chris Pearson""," & vbNewLine _
-    & "    ""avatar"": ""https://newjirasandbox.silverchair.com/secure/useravatar?size=small&ownerId=cpearson&avatarId=25375""" & vbNewLine _
-    & "}," & vbNewLine
-    
-    sJson = sJson _
-    & """issue"": {" & vbNewLine _
-    & "    ""self"": ""https://newjirasandbox.silverchair.com/rest/api/2/issue/243185""," & vbNewLine _
-    & "    ""id"": 243185," & vbNewLine _
-    & "    ""projectId"": 13680," & vbNewLine _
-    & "    ""key"": ""SCMP-11878""," & vbNewLine _
-    & "    ""remainingEstimateSeconds"": 0," & vbNewLine _
-    & "    ""issueType"": {" & vbNewLine _
-    & "        ""name"": ""Epic""," & vbNewLine _
-    & "        ""iconUrl"": ""https://newjirasandbox.silverchair.com/secure/viewavatar?size=xsmall&avatarId=17177&avatarType=issuetype""" & vbNewLine _
-    & "    }," & vbNewLine _
-    & "    ""summary"": ""Implementation Epic: PSI IP Intrusion and IP Registry Integration""" & vbNewLine _
-    & "}," & vbNewLine _
-    & """worklogAttributes"": []," & vbNewLine _
-    & """workAttributeValues"": []" & vbNewLine _
-    & "}"
-    
-    ' Parse the return into a Dictionary for reporting
-    Set oJson = JsonConverter.ParseJson(sJson)
-    
-    ' Assemble body
-    ' First, the table row(s)
-    sMsgBody = reportWorklog(oJson, True)
-    
-    ' Second, the table head and close
-    sMsgBody = assembleEmailMsgBody(sMsgBody, True)
-
-    
-    Call sendEmail("Chris P.", "cpearson@silverchair.com", "Chris", "cpearson@silverchair.com", sMsgBody, True)
-    
-End Sub
-
-
-
-Function reportWorklog(ByVal oWork As Dictionary, Optional ByVal bHTML As Boolean = False) As String
+Function reportWorklog(ByVal oWork As Dictionary) As String
 On Error GoTo Err_reportWorklog
 
-    Dim sString As String, sNewString As String
+    Dim sString As String
     Dim dDate As Date
     Dim sDate As String
            
     sDate = oWork("dateStarted")
     sDate = Left(sDate, 10)
     
-    If bHTML Then
-        sNewString = sNewString _
-            & "<tr>" _
+    sString = "<tr>" _
             & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal>" & oWork("jiraWorklogId") & "</p></td>" _
             & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal>" & sDate & "</p></td>" _
             & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal>" & (oWork("timeSpentSeconds") / 60) & "m" & "</p></td>" _
@@ -326,19 +149,8 @@ On Error GoTo Err_reportWorklog
             & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal>" & oWork("issue")("summary") & "</p></td>" _
             & "<td valign=top style='padding:0in 5.4pt 0in 5.4pt'><p class=MsoNormal>" & oWork("comment") & "</p></td>" _
             & "</tr>"
-    Else:
-        sNewString = sNewString _
-            & oWork("jiraWorklogId") & ", " _
-            & sDate & ", " _
-            & (oWork("timeSpentSeconds") / 60) & "m" & ", " _
-            & oWork("issue")("key") & " [" _
-            & oWork("issue")("summary") & "]" & ", " _
-            & oWork("comment") _
-            & vbNewLine
-    End If
     
-    sString = sString & sNewString
- '   Debug.Print sString
+    ' Debug.Print sString
     
     reportWorklog = sString
 
@@ -351,67 +163,9 @@ Err_reportWorklog:
     
 End Function
 
-
-Function AssembleJson(ByVal oJson As Dictionary, sThisUserName) As String
-
-    Dim sIssueKey As String, sComment As String, sDate As String, _
-        sEpicLink As String, sJson As String
-    Dim lTimeSpentSeconds As Long
-        
-    ' Assign values
-    If Len(sComment) < 0 Then
-        sComment = "Working on Issue " & sIssueKey
-    Else:
-        sComment = oJson("comment")
-    End If
-    sIssueKey = oJson("issueKey")
-    sEpicLink = oJson("epicLink")
-    lTimeSpentSeconds = oJson("timeSpentSeconds")
-    sDate = oJson("dateStarted")
-    
-    If Len(sEpicLink) > 0 Then
-        sIssueKey = sEpicLink
-    End If
-    
-    ' Build the JSON data
-    sJson = "{" & vbNewLine
-    sJson = sJson & "  ""issue"": {""key"":""" & sIssueKey & """}, " & vbNewLine
-    sJson = sJson & "  ""author"": {""name"":""" & sThisUserName & """}," & vbNewLine
-    sJson = sJson & "  ""comment"":""" & sComment & """," & vbNewLine
-    sJson = sJson & "  ""dateStarted"":""" & sDate & """," & vbNewLine
-    sJson = sJson & "  ""timeSpentSeconds"":" & lTimeSpentSeconds & vbNewLine
-    sJson = sJson & "}"
-    
-    AssembleJson = sJson
-    
-    ' Debug.Print AssembleJson
-
-End Function
-
 Function GetWorksheetIssues() As Dictionary
 On Error GoTo Err_GetWorksheetIssues
 
-' This will return a dictionary of the issues from the worksheet
-' LONG_INTEGER (index), one per issue
-'   "rowIndex" - what row on the worksheet this came from
-'   "key" - the Jira key to look up
-'   "timeInMinutes" - the time spent in minutes
-'   "date" - the effective date of the work
-'   "comment" - a comment for the worklog
-'
-'{
-'issue:
-'    {
-'       key:string
-'    }
-'       author:Ignored in PUT operations
-
-'    comment:stringDescription of the worklog
-'    dateStarted:stringYYYY-MM-ddT00:00:00.000+0000
-'    timeSpentSeconds:numberTime worked in seconds
-'}
-
-    Dim wb As Workbook
     Dim wksTimeLogs As Worksheet
     Dim lLastRow As Long, lRow As Long, lIdx As Long
     Dim sKey As String, sDate As String, sComment As String, sIssueSummary As String, sType As String, sEpicLink As String
@@ -419,8 +173,7 @@ On Error GoTo Err_GetWorksheetIssues
     Dim dDate As Date
     Dim oDict As Dictionary, oDictI As Dictionary
         
-    Set wb = ThisWorkbook
-    Set wksTimeLogs = wb.Worksheets("Issues")
+    Set wksTimeLogs = ThisWorkbook.Worksheets("Issues")
     Set oDict = CreateObject("Scripting.Dictionary")
 
     With wksTimeLogs
@@ -433,7 +186,10 @@ On Error GoTo Err_GetWorksheetIssues
             dDate = .Cells(lRow, 7).Value ' Date
             sDate = Format(dDate, "yyyy-mm-ddThh:mm:ss.000+0000")  ' Converted Date
             lTimeSpentSeconds = .Cells(lRow, 6).Value * 60 ' Converted Time in Minutes to Seconds
-            sComment = .Cells(lRow, 4).Value ' Time Log Comment
+            If Len(.Cells(lRow, 4).Value) > 0 Then
+                sComment = .Cells(lRow, 4).Value ' Time Log Comment
+                sComment = sComment & " (Issue Key: " & sKey & ")"
+            End If
             sIssueSummary = .Cells(lRow, 9).Value ' Issue Summary
             sType = .Cells(lRow, 8).Value ' Issue Type
             sEpicLink = .Cells(lRow, 10).Value ' Epic Link
@@ -476,214 +232,22 @@ Err_GetWorksheetIssues:
     
 End Function
 
-Function GetJiraCredentials() As String
-
-    Dim sUser As String, sPass As String
-    Dim isError As Boolean: isError = False
-        
-    ' get the User Name
-    sUser = InputBox("JIRA User Name", "Enter JIRA Credentials")
-    If checkInputBoxEntry(sUser) Then isError = True
-
-    'get the Passord
-    sPass = InputBoxDK("JIRA Password", "Enter JIRA Credentials")
-    If checkInputBoxEntry(sPass) Then isError = True
-    
-    ' Ensure we have something to encode
-    If isError Then
-        MsgBox "Error in entering user name / password. Either cancelled or no entry provided.", vbInformation
-        Exit Function
-    Else
-        GetJiraCredentials = Base64Encode(sUser + ":" + sPass)
-        'Update the username of the person requesting the post
-        sUsername = sUser
-    End If
-        
-
-End Function
-
-
-Function checkInputBoxEntry(sEntry As String) As Boolean
-    Dim isError As Boolean
-        
-        ' https://stackoverflow.com/questions/26264814/how-to-detect-if-user-select-cancel-inputbox-vba-excel
-        If StrPtr(sEntry) = 0 Then
-            isError = True
-        ElseIf sEntry = vbNullString Then
-            isError = True
-        Else
-            isError = False
-        End If
-        
-    checkInputBoxEntry = isError
-
-End Function
-
-
-Function JiraRestAPI(ByVal sUserPass As String, ByVal sRestApiUrl As String, ByVal sMethod As String, _
-    Optional ByVal lStartAt As Long = 0, Optional ByVal lMaxResults As Long = 1000, _
-    Optional ByVal sParams As String, Optional sBody As String) As String
-
-    Dim oJiraService As New MSXML2.XMLHTTP60
-    Dim sUrl As String
-        
-    ' construct the URL
-    Select Case sMethod
-        Case "GET"
-            sUrl = sRestApiUrl _
-                & "?startAt=" & lStartAt _
-                & "&maxResults=" & lMaxResults
-        Case Else
-            sUrl = sRestApiUrl
-    End Select
-    
-    
-    If Len(sParams) > 0 Then sUrl = sUrl & sParams
-    
-    Debug.Print sUrl
-    
-    
-    With oJiraService
-         
-         .Open sMethod, sUrl
-         
-        .setRequestHeader "Content-Type", "application/json"
-        .setRequestHeader "Accept", "application/json"
-        .setRequestHeader "User-Agent", "ThisIsADummyUserAgent"
-        .setRequestHeader "Authorization", "Basic " & sUserPass
-        If sMethod = "POST" Then
-            .send (sBody)
-        Else:
-            .send
-        End If
-        
-         If .Status <> "200" Then
-             MsgBox "Error :  " & .responseText, vbCritical, "HTTP Error Code " & .Status
-             JiraRestAPI = ""
-         Else
-             JiraRestAPI = oJiraService.responseText
-         End If
-    End With
-End Function
-
-Sub sendEmail(ByVal sReceiverName As String, ByVal sReceiverEmail As String, _
-    ByVal sSenderName As String, ByVal sSenderEmail As String, ByVal sMessageBody As String, _
-    Optional ByVal bHTML As Boolean = False)
-        
-    On Error GoTo err_sendEmail
-    
-    Dim olApp As Outlook.Application
-    Dim olMsg As Outlook.MailItem
-    Dim sPath As String, sFile As String, sBody As String, _
-        sSubject As String, sMsg As String, sMsDiv As String
-    Dim blnCreated As Boolean, bPreview As Boolean
-    Dim wb As Workbook
-    Dim wksEmail As Worksheet
-    
-    Set wb = ThisWorkbook
-    Set wksEmail = wb.Worksheets("Email")
-    
-    ' Preview?
-    If wksEmail.Shapes("Check Box 3").OLEFormat.Object.Value = 1 Then
-        '1 is checked so True
-        bPreview = True
-    Else:
-        bPreview = False
-    End If
-    
-    sBody = Range("emailBody").Value
-    sSubject = Range("subject").Value
-    
-    If sSubject = "" Then
-        sSubject = "Timesheet Entry! " _
-            & sSenderName & " has posted time for you"
-    End If
-    
-    sPath = ThisWorkbook.Path
-    sFile = sPath & "\timesheet.jpeg"
-    
-    ' Set Outlook, and if not running start it
-    Set olApp = Outlook.Application
-    If olApp Is Nothing Then
-        Set olApp = Outlook.Application
-         blnCreated = True
-        Err.Clear
-    Else
-        blnCreated = False
-    End If
-      
-    Set olMsg = olApp.CreateItem(olMailItem)
-    
-    If bHTML Then
-        With olMsg
-            .Display
-        End With
-        sMsg = olMsg.HTMLBody
-        sMsDiv = "<div class=WordSection1><p class=MsoNormal><o:p>"
-        
-    End If
-    
-    With olMsg
-        .To = sReceiverEmail
-        .CC = sSenderEmail
-        .Subject = "Timesheet Entry Posted! " _
-            & sSenderName & " posted time for " & sReceiverName
-        .Attachments.Add sFile, 1, 0
-        ' Check if plain text or HTML
-        If bHTML Then
-            .HTMLBody = Replace(sMsg, sMsDiv, sMsDiv & sMessageBody)
-        Else:
-            .Body = sMessageBody
-        End If
-        
-        ' Check if preview or direct send
-        If Not bPreview Then
-            .send
-        End If
-    End With
-
-exit_sendEmail:
-    Set olMsg = Nothing
-    Set olApp = Nothing
-    Exit Sub
-    
-err_sendEmail:
-    MsgBox (Err.Description), vbCritical, "Error: " & Err.Number
-    Resume exit_sendEmail
-End Sub
-
 Sub UpdateIssues()
 On Error GoTo Err_UpdateIssues
     
-    Dim wb As Workbook
-    Dim wksSetup As Worksheet, wksTimeLogs As Worksheet
+    Dim wks As Worksheet
     Dim r As Range
     Dim lLastRow As Long, lRow As Long, lOffset As Long
-    Dim sJiraBaseUrl As String, sJson As String, sParams As String, _
+    Dim sJson As String, sParams As String, _
         sThisUser As String, sKey As String
     Dim oJson As Dictionary
     Dim dDate As Date
     
     Application.ScreenUpdating = False
         
-    Set wb = ThisWorkbook
-    Set wksSetup = wb.Worksheets("Setup")
-    Set wksTimeLogs = wb.Worksheets("Issues")
-    
-    ' Set the Jira base
-    sJiraBaseUrl = "https://" & Range("sJiraRoot").Value & ".silverchair.com"
-    
-    ' Set the basic authentication for REST
-    If Len(sBasicAuth) = 0 Then
-        sBasicAuth = GetJiraCredentials()
-    End If
-    
-    ' ensure we have creds
-    If Len(sBasicAuth) = 0 Then
-        GoTo Exit_UpdateIssues
-    End If
-    
-    With wksTimeLogs
+    Set wks = ThisWorkbook.Worksheets("Issues")
+        
+    With wks
         
         lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
         lOffset = 5
@@ -694,6 +258,15 @@ On Error GoTo Err_UpdateIssues
             dDate = Date
             .Range("effectiveDate").Value = dDate
         End If
+        
+        ' Validate the data
+        For lRow = 6 To lLastRow
+            If (Len(.Cells(lRow, 1).Value) = 0 Or IsEmpty(Trim$(.Cells(lRow, 1).Value))) Then
+                MsgBox "Found a data issue in row " & lRow & "." & vbNewLine _
+                & "Please correct.  Process stopped and no time was posted."
+                GoTo Exit_UpdateIssues
+            End If
+        Next
         
         ' Iterate over the issues
         For lRow = 6 To lLastRow
@@ -710,7 +283,7 @@ On Error GoTo Err_UpdateIssues
                 sParams = "&fields=summary,issuetype,customfield_11732"
             
                 ' Validate this issue exists via GET
-                Set oJson = GetIssues(lRow, sJiraBaseUrl, sKey, sParams)
+                Set oJson = GetIssuesFromJira(lRow, sKey, sParams)
                 
                 If Not IsNull(oJson) Then
                         
@@ -753,117 +326,111 @@ Err_UpdateIssues:
     MsgBox Err.Description, vbCritical, "Error: " & Err.Number
 End Sub
 
-Function GetIssues(ByVal lRow As Long, ByVal sJiraBaseUrl As String, _
-    ByVal sKey As String, Optional ByVal sParams As String) As Dictionary
-    
-    Dim sJql As String, sJson As String
-    Dim oJson As Object
-    
-    ' Validate this issue exists via GET
-    sJql = "jql=key=" & sKey
-    sParams = sParams & "&" & sJql
-    sJson = JiraRestAPI(sBasicAuth, sJiraBaseUrl & "/rest/api/2/search", "GET", 0, 1, sParams)
-        
-    'parse the results
-    Set oJson = JsonConverter.ParseJson(sJson)
 
-    ' Check if the results are empty
-    ' Assumes that resulting JSON will contain a key of "errorMessages" if there's an error
-    If oJson.Exists("errorMessages") Then
-        ' Ooops!  Invalid spreadsheet entry; report and quit
-        MsgBox "Error processing line " & lRow & vbNewLine _
-            & oJson("errorMessages")(1) & vbNewLine _
-            & "Correct this entry and reprocess."
-        Set GetIssues = Nothing
-        Exit Function
-    Else:
-        Set GetIssues = oJson
-    End If
+Sub GetEmployees()
+On Error GoTo Err_GetEmployees
 
-End Function
-
-Sub UpdateUsers()
-On Error GoTo Err_UpdateUsers
-
-    Dim wb As Workbook
-    Dim wksSetup As Worksheet, wksTeam As Worksheet
-    Dim lLastRow As Long, lRow As Long
-    Dim sJiraBaseUrl As String, sJson As String, sParam As String, _
-        sThisUser As String
-    Dim oJson As Dictionary
+    Dim wksEmployee As Worksheet
+    Dim lLastRow As Long, lRow As Long, lRowIdx As Long
+    Dim sJson As String, sJsonUser As String, sParams As String
+    Dim oJson As Dictionary, oJsonUser As Dictionary, oJsonUserGroups As Dictionary
+    Dim bTimeSheetUser As Boolean
     
     Application.ScreenUpdating = False
-        
-    Set wb = ThisWorkbook
-    Set wksSetup = wb.Worksheets("Setup")
-    Set wksTeam = wb.Worksheets("Team Members")
-    
-    ' Set the Jira base
-    sJiraBaseUrl = "https://" & Range("sJiraRoot").Value & ".silverchair.com"
-    
-    ' Set the basic authentication for REST
+            
+    ' Confirm our authentication is already handled
     If Len(sBasicAuth) = 0 Then
-        sBasicAuth = GetJiraCredentials()
+        sBasicAuth = RestHelper.SetBasicAuth()
     End If
+
+    ' Clear Users
+    Call TempoWorklogs.clearWorksheetData("Employees", 2)
     
-    ' ensure we have creds
-    If Len(sBasicAuth) = 0 Then
-        GoTo Exit_UpdateUsers
-    End If
+    Set wksEmployee = ThisWorkbook.Worksheets("Employees")
     
-    With wksTeam
+    With wksEmployee
         
         lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+            
+        ' Update Status Bar
+        Application.StatusBar = "Retrieving users from Jira"
+                               
+        ' Get the Employees and put into a dictionary
+        Set oJson = RestHelper.GetEmployeesFromJira()
         
-        ' Iterate over the people
-        For lRow = 3 To lLastRow
+        ' Use lRow and lIdx because there will be Idx values we don't write to rows
+        lRow = 2 ' start at the top
+        For lRowIdx = 1 To oJson("users").Count
+        
+            Application.StatusBar = "Processing " & (lRowIdx) & " of " & oJson("users").Count
             
-            ' Update Status Bar
-            Application.StatusBar = "Processing row " & lRow & " of " & lLastRow
+            bTimeSheetUser = False
             
-            sThisUser = .Cells(lRow, 2).Value
+            ' Get the JIRA data for this user
+            Set oJsonUser = RestHelper.GetUserFromJira(oJson("users")(lRowIdx)("name"))
+                                       
+            ' Is this user able to log time?
+            bTimeSheetUser = CanLogTime(oJsonUser)
             
-            ' Check this row's user name
-            sParam = "&username=" & sThisUser
-            sJson = JiraRestAPI(sBasicAuth, sJiraBaseUrl & "/rest/api/2/user", "GET", 0, 1, sParam)
-            
-            If Len(sJson) = 0 Then
-                ' Houston we have issues. Fix the username and password and quit.
-                MsgBox "Issue with User Name or Password. Please try again.", vbExclamation, "Error"
-                GoTo Exit_UpdateUsers
-            Else:
-                'parse the results
-                Set oJson = JsonConverter.ParseJson(sJson)
-                ' Check if the results are empty
-                ' Assumes that resulting JSON will contain a key of "errorMessages" if there's an error
-                If oJson.Exists("errorMessages") Then
-                    ' Ooops!  Invalid spreadsheet entry; report and quit
-                    MsgBox "Error processing row " & lRow & vbNewLine _
-                        & oJson("errorMessages")(1) & vbNewLine _
-                        & "Correct this entry and retry."
-                    GoTo Exit_UpdateUsers
-                Else:
-                    'OK!
-                    .Cells(lRow, 3).Value = oJson("displayName")
-                    .Cells(lRow, 4).Value = oJson("emailAddress")
-                    .Cells(lRow, 5).Value = oJson("avatarUrls")("48x48")
-                    
-                End If
-            
+            If bTimeSheetUser Then
+                ' Write the info to the worksheet.
+                .Cells(lRow, 1).Value = oJsonUser("name")
+                .Cells(lRow, 2).Value = oJsonUser("displayName")
+                .Cells(lRow, 3).Value = oJsonUser("emailAddress")
+                
+                ' We wrote something. Move to next Row
+                lRow = lRow + 1
+                
             End If
-
-        Next lRow
+        
+        Next lRowIdx
     
     End With
     
-Exit_UpdateUsers:
+Exit_GetEmployees:
     Application.StatusBar = ""
     Application.ScreenUpdating = True
     Exit Sub
 
-Err_UpdateUsers:
+Err_GetEmployees:
     MsgBox Err.Description, vbCritical, "Error: " & Err.Number
-    Resume Exit_UpdateUsers
+    Resume Exit_GetEmployees
     
 End Sub
+
+
+Sub clearWorksheetData(ByVal wksName As String, lFirstRow As Long)
+    
+    Dim wks As Worksheet
+    Dim lLastRow As Long, lRow As Long, lIdx As Long
+ 
+    Set wks = ThisWorkbook.Worksheets(wksName)
+    
+    With wks
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        If lLastRow >= lFirstRow Then
+            Rows(lFirstRow & ":" & lLastRow).EntireRow.Delete
+        End If
+    End With
+    
+End Sub
+
+Function CanLogTime(ByVal oJson As Dictionary) As Boolean
+
+    Dim v As Variant
+    Dim b As Boolean
+    
+    b = False
+        
+    For Each v In oJson("groups")("items")
+        If v("name") = "jira_timesheets_users" Then
+            b = True
+            Exit For
+        End If
+    Next
+    
+    CanLogTime = b
+            
+End Function
+
 
