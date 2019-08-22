@@ -43,7 +43,7 @@ On Error GoTo err_createWorklogs
         
         Application.StatusBar = "Posting Time"
 
-        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.count).Row
         
         ' Validate data
         For lRow = 3 To lLastRow
@@ -178,7 +178,7 @@ On Error GoTo Err_GetWorksheetIssues
 
     With wksTimeLogs
     
-        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.count).Row
         For lRow = 6 To lLastRow
         
             ' assign vars
@@ -219,7 +219,7 @@ On Error GoTo Err_GetWorksheetIssues
 
     End With
     
-    If oDict.Count > 0 Then
+    If oDict.count > 0 Then
         Set GetWorksheetIssues = oDict
     End If
     
@@ -249,7 +249,7 @@ On Error GoTo Err_UpdateIssues
         
     With wks
         
-        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.count).Row
         lOffset = 5
         
         ' fill Today's Date if Blank
@@ -350,7 +350,7 @@ On Error GoTo Err_GetEmployees
     
     With wksEmployee
         
-        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.count).Row
             
         ' Update Status Bar
         Application.StatusBar = "Retrieving users from Jira"
@@ -360,9 +360,9 @@ On Error GoTo Err_GetEmployees
         
         ' Use lRow and lIdx because there will be Idx values we don't write to rows
         lRow = 2 ' start at the top
-        For lRowIdx = 1 To oJson("users").Count
+        For lRowIdx = 1 To oJson("users").count
         
-            Application.StatusBar = "Processing " & (lRowIdx) & " of " & oJson("users").Count
+            Application.StatusBar = "Processing " & (lRowIdx) & " of " & oJson("users").count
             
             bTimeSheetUser = False
             
@@ -407,7 +407,7 @@ Sub clearWorksheetData(ByVal wksName As String, lFirstRow As Long)
     Set wks = ThisWorkbook.Worksheets(wksName)
     
     With wks
-        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.count).Row
         If lLastRow >= lFirstRow Then
             Rows(lFirstRow & ":" & lLastRow).EntireRow.Delete
         End If

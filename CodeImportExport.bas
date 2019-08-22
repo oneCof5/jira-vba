@@ -96,7 +96,7 @@ Public Sub ImportModules()
     szImportPath = FolderWithVBAProjectFiles & "\"
         
     Set objFSO = New Scripting.FileSystemObject
-    If objFSO.GetFolder(szImportPath).Files.Count = 0 Then
+    If objFSO.GetFolder(szImportPath).Files.count = 0 Then
        MsgBox "There are no files to import"
        Exit Sub
     End If

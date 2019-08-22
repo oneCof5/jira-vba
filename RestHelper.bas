@@ -235,7 +235,7 @@ Function ValidateJiraUsername(ByVal sUser As String) As Boolean
     
     With wks
     
-        lLastRow = .UsedRange.Rows(.UsedRange.Rows.Count).Row
+        lLastRow = .UsedRange.Rows(.UsedRange.Rows.count).Row
         
         For lRow = 2 To lLastRow
             If sUser = .Cells(lRow, 1).Value Then
